@@ -22,7 +22,8 @@ export const playSetting = defineStore('playSetting', {
     useAmlLyricRenderer: true, // 使用 AppleMusicLike 的歌词组件渲染
     isGrepLyricInfo: false, // 是否开启歌词信息 grep
     strictGrep: false, // 是否开启严格歌词信息 grep
-    keepPlaylistOrder: false // 歌单「随机播放」时保持歌单原始顺序(不打乱列表)，默认关闭
+    keepPlaylistOrder: false, // 歌单「随机播放」时保持歌单原始顺序(不打乱列表)，默认关闭
+    banPrevRandom: true // 随机模式下「上一曲」沿随机序反向回退(禁止乱跳)，默认开启
   }),
   getters: {
     getisJumpLyric: (state) => state.isJumpLyric,
@@ -44,7 +45,8 @@ export const playSetting = defineStore('playSetting', {
     getUseAmlLyricRenderer: (state) => state.useAmlLyricRenderer,
     getIsGrepLyricInfo: (state) => state.isGrepLyricInfo,
     getStrictGrep: (state) => state.strictGrep,
-    getKeepPlaylistOrder: (state) => state.keepPlaylistOrder
+    getKeepPlaylistOrder: (state) => state.keepPlaylistOrder,
+    getBanPrevRandom: (state) => state.banPrevRandom
   },
   actions: {
     setIsDumpLyric(isDumpLyric: boolean) {
@@ -97,6 +99,9 @@ export const playSetting = defineStore('playSetting', {
     },
     setKeepPlaylistOrder(enabled: boolean) {
       this.keepPlaylistOrder = enabled
+    },
+    setBanPrevRandom(enabled: boolean) {
+      this.banPrevRandom = enabled
     }
   },
   persist: true

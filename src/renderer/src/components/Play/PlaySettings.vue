@@ -72,6 +72,11 @@ const settingSections = computed(() => [
         label: '歌单列表原始顺序',
         value: playSetting.getKeepPlaylistOrder,
         update: (val: boolean) => playSetting.setKeepPlaylistOrder(val)
+      },
+      {
+        label: '禁止上一曲随机',
+        value: playSetting.getBanPrevRandom,
+        update: (val: boolean) => playSetting.setBanPrevRandom(val)
       }
     ]
   },

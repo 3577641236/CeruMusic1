@@ -15,9 +15,11 @@ import {
 import { waitForAudioReady, getCandidateSongs } from './audioHelpers'
 import { crossfadeManager } from './crossfade'
 import { useGlobalPlayStatusStore } from '@renderer/store/GlobalPlayStatus'
+import { playSetting } from '@renderer/store/playSetting'
 
 const controlAudio = ControlAudioStore()
 const localUserStore = LocalUserDetailStore()
+const playSettingStore = playSetting()
 const { Audio } = storeToRefs(controlAudio)
 const { list, userInfo } = storeToRefs(localUserStore)
 
@@ -836,6 +838,21 @@ const playPrevious = async () => {
   }
   if (list.value.length === 0) return
   try {
+    /* 「禁止上一曲随机」开启时，随机模式沿 shuffleOrder 反向取一格 ——
+     * 与「下一曲」共用同一条随机序，所以自动播到下一首后按上一曲能原路退回，
+     * 不会再落到打乱后的 list 里那首不相干的歌。
+     * 这里刻意不重建随机序(不同于下一曲绕回末尾的处理)：序列保持稳定，
+     * 连按上一曲才能一路倒着退回去，而不是按到一半序列被重洗。 */
+    if (playMode.value === PlayMode.RANDOM && playSettingStore.getBanPrevRandom) {
+      ensureShuffleOrder()
+      const curId = pendingSongId ?? userInfo.value.lastPlaySongKey ?? userInfo.value.lastPlaySongId
+      let idx = shuffleOrder.value.findIndex((id) => id === curId)
+      if (idx < 0) idx = 0 // 当前歌不在随机序里：兜底取随机序最后一首
+      const prevIdx = idx <= 0 ? shuffleOrder.value.length - 1 : idx - 1
+      const prevSong = list.value.find((song) => songKey(song) === shuffleOrder.value[prevIdx])
+      if (prevSong) await playSong(prevSong)
+      return
+    }
     const currentIndex = list.value.findIndex(
       (song) =>
         songKey(song) ===
