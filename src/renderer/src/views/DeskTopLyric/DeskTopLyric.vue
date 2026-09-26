@@ -149,6 +149,14 @@ import { reactive, ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useWindowSize, useRafFn, useTimeoutFn, useDebounceFn, useThrottleFn } from '@vueuse/core'
 import type { ComponentPublicInstance } from 'vue'
 import type { LyricLine, LyricWord } from '@applemusic-like-lyrics/lyric'
+import {
+  anchorTo,
+  computeLyricIndex,
+  freezeClock,
+  getLyricMs,
+  resetClock,
+  resumeClock
+} from '@renderer/utils/lyrics/lyricClock'
 
 type RenderLine = {
   line: LyricLine
@@ -204,29 +212,20 @@ const lyricData = reactive<LyricData>({
   lyricIndex: -1
 })
 
-let baseMs = 0
-let anchorTick = 0
-
+// 播放位置由共享时钟模块提供：它接收主窗口推来的锚点(歌曲位置+产生该位置时的
+// 墙钟时间)，把 IPC 传输耗时补掉后锚定到本窗口的 performance.now() 上，
+// 之后每帧本地推算。因此这里的 rAF 只负责"取当前值并触发重渲染"，
+// 暂停时模块自身会冻结数值，不需要再暂停这个循环。
 const playSeekMs = ref<number>(0)
-const { pause: pauseSeek, resume: resumeSeek } = useRafFn(() => {
-  if (lyricData.playStatus) {
-    playSeekMs.value = baseMs + (performance.now() - anchorTick)
-  } else {
-    playSeekMs.value = baseMs
-  }
+useRafFn(() => {
+  playSeekMs.value = getLyricMs()
 })
-
-const LYRIC_LOOKAHEAD = 300
 
 const currentLyricIndex = computed(() => {
   const lyrics =
     lyricConfig.showYrc && lyricData?.yrcData?.length ? lyricData.yrcData : lyricData.lrcData
-  if (!lyrics || !lyrics.length) return -1
-  const seek = playSeekMs.value + 0
-  const idx = lyrics.findIndex((v) => (v.startTime || 0) > seek)
-  if (idx === -1) return lyrics.length - 1
-  if (idx > 0) return idx - 1
-  return -1
+  // 与主窗口共用同一份实现（此前这里自己写了一份等价的查找逻辑）
+  return computeLyricIndex(playSeekMs.value, lyrics)
 })
 
 const lyricConfig = reactive<LyricConfig>({
@@ -390,7 +389,7 @@ const renderLyricLines = computed<RenderLine[]>(() => {
 const getYrcStyle = (wordData: LyricWord, lyricIndex: number) => {
   const currentLine = lyricData.yrcData?.[lyricIndex]
   if (!currentLine) return { backgroundPositionX: '100%' }
-  const seekSec = playSeekMs.value + LYRIC_LOOKAHEAD
+  const seekSec = playSeekMs.value
   const startSec = currentLine.startTime || 0
   const endSec = currentLine.endTime || 0
   const isLineActive =
@@ -796,6 +795,9 @@ onMounted(() => {
     }
   )
   window.electron?.ipcRenderer?.on?.('play-lyric-change', (_event, lines: LyricLine[]) => {
+    // 丢弃旧锚点：切歌后到下一帧推送之间会有一段缓冲空档，若继续用上一首的
+    // 锚点推算，会在这段空档里显示错误的高亮行
+    resetClock()
     lyricData.lrcData = lines || []
     // 优先把逐字歌词当作 yrcData（如果行 words 长度>1）
     lyricData.yrcData =
@@ -812,27 +814,32 @@ onMounted(() => {
     'play-lyric-progress',
     (
       _event,
-      payload: { index: number; progress: number; currentMs?: number; timestamp?: number }
+      payload: {
+        index: number
+        progress: number
+        currentMs?: number
+        wallMs?: number
+        timestamp?: number
+      }
     ) => {
       if (typeof payload?.currentMs === 'number') {
-        const newBase = Math.floor(payload.currentMs)
-        const drift = Math.abs(newBase - playSeekMs.value)
-        const SYNC_THRESHOLD = 300
-        if (drift > SYNC_THRESHOLD) {
-          baseMs = newBase
-          anchorTick = performance.now()
-        }
+        // 直接锚定，不再需要"漂移超过阈值才校正"或按比例收敛：
+        // anchorTo 会用 Date.now() - wallMs 把 IPC 传输耗时补回来，
+        // 所以每一次推送都是无跳变的精确锚点，相邻推送之间本地推算。
+        // 播放状态用本窗口已知的值，不依赖 progress/status 两条消息的到达顺序。
+        anchorTo(
+          { songMs: payload.currentMs, wallMs: payload.wallMs ?? Date.now() },
+          lyricData.playStatus
+        )
       }
     }
   )
   window.electron?.ipcRenderer?.on?.('play-status-change', (_event, status: boolean) => {
     lyricData.playStatus = !!status
     if (lyricData.playStatus) {
-      resumeSeek()
+      resumeClock()
     } else {
-      baseMs = playSeekMs.value
-      anchorTick = performance.now()
-      pauseSeek()
+      freezeClock()
     }
   })
   window.electron?.ipcRenderer?.on?.('desktop-lyric-option-change', (_event, option: any) => {
@@ -889,9 +896,9 @@ onMounted(() => {
     }
   }, FALLBACK_INITIALIZATION_TIMEOUT)
   if (lyricData.playStatus) {
-    resumeSeek()
+    resumeClock()
   } else {
-    pauseSeek()
+    freezeClock()
   }
   document.addEventListener('pointerdown', onDocPointerDown)
   document.addEventListener('mousemove', handleMouseMove)
@@ -901,7 +908,6 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  pauseSeek()
   document.removeEventListener('pointerdown', onDocPointerDown)
   document.removeEventListener('mousemove', handleMouseMove)
   document.removeEventListener('mouseleave', handleMouseLeave)

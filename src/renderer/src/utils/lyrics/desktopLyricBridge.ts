@@ -3,6 +3,12 @@ import { useGlobalPlayStatusStore } from '@renderer/store/GlobalPlayStatus'
 import { storeToRefs } from 'pinia'
 import { watch } from 'vue'
 import { LocalUserDetailStore } from '@renderer/store/LocalUserDetail'
+import { useLyricExtrasStore } from '@renderer/store/LyricExtras'
+import {
+  computeLyricIndex,
+  projectSmooth,
+  resetProjector
+} from '@renderer/utils/lyrics/lyricClock'
 
 interface LyricWord {
   word: string
@@ -22,17 +28,6 @@ function buildLyricPayload(lines: LyricLine[]) {
   return JSON.parse(JSON.stringify(lines || []))
 }
 
-function computeLyricIndex(timeMs: number, lines: LyricLine[]) {
-  if (!lines || lines.length === 0) return -1
-  const t = timeMs
-  const i = lines.findIndex((l) => t >= l.startTime && t < l.endTime)
-  if (i !== -1) return i
-  for (let j = lines.length - 1; j >= 0; j--) {
-    if (t >= lines[j].startTime) return j
-  }
-  return -1
-}
-
 export function installDesktopLyricBridge() {
   if (installed) return
   installed = true
@@ -42,8 +37,23 @@ export function installDesktopLyricBridge() {
   const { player } = storeToRefs(globalPlayStatus)
   const localUserStore = LocalUserDetailStore()
   const { userInfo } = storeToRefs(localUserStore)
+  const lyricExtrasStore = useLyricExtrasStore()
 
   let lastIndex = -1
+
+  /**
+   * 当前曲目的歌词偏移(ms)，语义与 FullPlay.vue 的 currentLyricOffset 完全一致
+   * (正值=歌词提前)。取值方式也照抄那边：直接读 offsetMap，函数调用在某些
+   * effect scope 边界下会丢订阅。
+   */
+  const currentOffsetMs = () => {
+    const mid = (player.value.songInfo as any)?.songmid
+    if (mid === null || mid === undefined || mid === '') return 0
+    const raw = (lyricExtrasStore.offsetMap as Record<string, any>)[String(mid)]
+    if (raw === undefined || raw === null) return 0
+    if (typeof raw === 'number') return raw || 0
+    return (raw.value as number) || 0
+  }
 
   // 监听歌词变化
   watch(
@@ -98,15 +108,16 @@ export function installDesktopLyricBridge() {
         buildLyricPayload(currentLines)
       )
       const a = controlAudio.Audio
-      let ms = Math.round((a?.currentTime || 0) * 1000)
-      if (ms <= 0) {
+      let rawMs = Math.round((a?.currentTime || 0) * 1000)
+      if (rawMs <= 0) {
         const lastId = userInfo.value?.lastPlaySongId
         const songId = currentSong?.songmid
         const restoreMs = Math.round(Number(userInfo.value?.currentTime || 0) * 1000)
         if (lastId && songId && lastId === songId && restoreMs > 0) {
-          ms = restoreMs
+          rawMs = restoreMs
         }
       }
+      const ms = rawMs + currentOffsetMs()
       const idx = computeLyricIndex(ms, currentLines as any)
       lastIndex = idx
       ;(window as any)?.electron?.ipcRenderer?.send?.('play-lyric-index', idx)
@@ -120,6 +131,7 @@ export function installDesktopLyricBridge() {
         index: idx,
         progress,
         currentMs: ms,
+        wallMs: Date.now(),
         timestamp: performance.now()
       })
       ;(window as any)?.electron?.ipcRenderer?.send?.(
@@ -144,37 +156,42 @@ export function installDesktopLyricBridge() {
     }
   )
 
-  // 使用 RAF 替代 setInterval
-  const loop = () => {
-    if (!installed) return
+  const LOOP_MS = 33
 
+  const syncLyrics = () => {
+    if (!installed) return
     const a = controlAudio.Audio
-    let ms = Math.round((a?.currentTime || 0) * 1000)
-    if (ms <= 0) {
-      const currentSong = player.value.songInfo as any
-      const lastId = userInfo.value?.lastPlaySongId
-      const songId = currentSong?.songmid
-      const restoreMs = Math.round(Number(userInfo.value?.currentTime || 0) * 1000)
-      if (lastId && songId && lastId === songId && restoreMs > 0) {
-        ms = restoreMs
-      }
-    }
+    if (!a.isPlay) return
+
+    const rawMs = Math.round((a?.currentTime ?? a?.audio?.currentTime ?? 0) * 1000)
+    const smoothMs = projectSmooth(rawMs)
+    if (smoothMs <= 0) return
+
+    // 与主窗口 FullPlay.vue 的 effectiveLyricTime 同源：平滑后的播放位置 + 本曲偏移。
+    // (此前推的是未加偏移的裸时间，用户在"更多 -> 歌词偏移"里调过之后两个窗口会不一致)
+    const songMs = smoothMs + currentOffsetMs()
+
     const currentLines = player.value.lyrics.lines || []
-    const idx = computeLyricIndex(ms, currentLines)
+    if (currentLines.length === 0) return
+
+    const idx = computeLyricIndex(songMs, currentLines)
 
     // 计算当前行进度（0~1）
     let progress = 0
     if (idx >= 0 && currentLines[idx]) {
       const line = currentLines[idx]
       const dur = Math.max(1, (line.endTime ?? line.startTime + 1) - line.startTime)
-      progress = Math.min(1, Math.max(0, (ms - line.startTime) / dur))
+      progress = Math.min(1, Math.max(0, (songMs - line.startTime) / dur))
     }
 
     // 首先推送进度，便于前端做 30% 判定（避免 setTimeout 带来的抖动）
+    // wallMs 必须与 currentMs 在同一 tick 内取：桌面窗口会用它的差值把 IPC
+    // 传输耗时补回来，这是两个窗口能做到毫秒级一致的关键。
     ;(window as any)?.electron?.ipcRenderer?.send?.('play-lyric-progress', {
       index: idx,
       progress,
-      currentMs: ms,
+      currentMs: songMs,
+      wallMs: Date.now(),
       timestamp: performance.now()
     })
 
@@ -183,16 +200,30 @@ export function installDesktopLyricBridge() {
       lastIndex = idx
       ;(window as any)?.electron?.ipcRenderer?.send?.('play-lyric-index', idx)
     }
-    playStateInterval = requestAnimationFrame(loop)
   }
 
-  playStateInterval = requestAnimationFrame(loop)
+  // 暂停或切歌时重置墙钟基准，避免恢复播放后出现跳变
+  watch(
+    () => controlAudio.Audio.isPlay,
+    (p) => {
+      if (!p) resetProjector()
+    }
+  )
+  watch(
+    () => player.value.songInfo?.songmid,
+    () => resetProjector()
+  )
+
+  // 用 setInterval 而非 requestAnimationFrame：主窗口最小化/被遮挡时 rAF 会被挂起，
+  // 桌面歌词将停止更新。
+  syncLyrics()
+  playStateInterval = window.setInterval(syncLyrics, LOOP_MS)
 }
 
 // 导出清理函数，用于清除所有定时器
 export function uninstallDesktopLyricBridge() {
   if (playStateInterval !== null) {
-    cancelAnimationFrame(playStateInterval)
+    clearInterval(playStateInterval)
     playStateInterval = null
   }
 
