@@ -11,6 +11,8 @@ import { LocalUserDetailStore } from '@renderer/store/LocalUserDetail'
 import { useSettingsStore } from '@renderer/store/Settings'
 import { useGlobalPlayStatusStore } from '@renderer/store/GlobalPlayStatus'
 import { createQualityDialog, downloadSingleSong } from '@renderer/utils/audio/download'
+import { setPlayMode } from '@renderer/utils/audio/globaPlayList'
+import { PlayMode } from '@renderer/types/audio'
 import { mapCloudSongToLocal, mapSongsToCloud } from '@renderer/utils/playlist/cloudList'
 import type { SongList } from '@common/types/songList'
 import {
@@ -887,7 +889,7 @@ const handlePlayBatchSelected = (batchSongs: any[]) => {
     MessagePlugin.warning('未选择歌曲')
     return
   }
-  replacePlaylist(batchSongs as any[], false)
+  replacePlaylist(batchSongs as any[])
 }
 const handleAddBatchToSongList = async (batchSongs: MusicItem[], playlist: SongList) => {
   if (!batchSongs || batchSongs.length === 0) {
@@ -1324,27 +1326,17 @@ const handleFileSelect = async (event: Event) => {
 }
 
 // 替换播放列表的通用函数
-const replacePlaylist = (songsToReplace: MusicItem[], shouldShuffle = false) => {
+const replacePlaylist = (songsToReplace: MusicItem[]) => {
   if (!(window as any).musicEmitter) {
     MessagePlugin.error('播放器未初始化')
     return
   }
 
-  let finalSongs = toRaw(songsToReplace)
-
-  if (shouldShuffle) {
-    // 创建歌曲索引数组并打乱
-    const shuffledIndexes = Array.from({ length: songsToReplace.length }, (_, i) => i)
-    for (let i = shuffledIndexes.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1))
-      ;[shuffledIndexes[i], shuffledIndexes[j]] = [shuffledIndexes[j], shuffledIndexes[i]]
-    }
-
-    // 按打乱的顺序重新排列歌曲
-    finalSongs = shuffledIndexes.map((index) => songsToReplace[index])
-  }
+  // 这里不再打乱歌曲顺序。随机播放交给播放模式(PlayMode.RANDOM)处理：
+  // 它用独立的 shuffleOrder 维护播放顺序，列表本身保持歌单原顺序、可逆，
+  // 且播完一轮会自动重洗。在此处物理打乱只会让队列永久乱序。
+  const finalSongs = toRaw(songsToReplace)
   const replaceData = finalSongs.map((song) => toRaw(song))
-  console.log('replaceData', replaceData)
   // 使用自定义事件替换整个播放列表
   if ((window as any).musicEmitter) {
     ;(window as any).musicEmitter.emit('replacePlaylist', replaceData)
@@ -1353,7 +1345,7 @@ const replacePlaylist = (songsToReplace: MusicItem[], shouldShuffle = false) => 
   MessagePlugin.success(`请稍等歌曲加载完成播放`)
 }
 
-const playAll = (shouldShuffle = false) => {
+const playAll = () => {
   return async () => {
     let loadingMsg: Promise<any> | null = null
     if (!isLocalPlaylist.value && hasMore.value) {
@@ -1380,9 +1372,8 @@ const playAll = (shouldShuffle = false) => {
     const paserSongs = toRaw(sourceSongs.map((song) => toRaw(song)))
     console.groupCollapsed('playAll:')
     console.log('songs', paserSongs)
-    console.log('shouldShuffle', shouldShuffle)
     console.groupEnd()
-    replacePlaylist(paserSongs, shouldShuffle)
+    replacePlaylist(paserSongs)
   }
 }
 
@@ -1416,7 +1407,14 @@ const handleShufflePlaylist = async () => {
     cancelBtn: '取消',
     onConfirm: async () => {
       dialog.destroy()
-      await playAll(true)()
+      // 与底部播放条的模式按钮保持一致：这里点随机播放，播放模式也切成随机。
+      // 否则底部图标会显示"顺序播放"，且播完一轮不会重洗(shuffleOrder 只在
+      // RANDOM 模式下维护/重建)。
+      // 必须放在替换列表之前 —— 这样列表变化时 watch(list) 会在 RANDOM 分支里
+      // 调 ensureShuffleOrder(true) 强制重洗；若放在之后，对同一个歌单重复点
+      // 随机播放时会因 isShuffleOrderValid() 判定通过而沿用上一轮顺序。
+      setPlayMode(PlayMode.RANDOM)
+      await playAll()()
     },
     onCancel: () => {
       dialog.destroy()

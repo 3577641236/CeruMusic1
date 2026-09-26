@@ -750,12 +750,17 @@ watch(
   { deep: true }
 )
 
+/** 直接指定播放模式(而非循环切换)，并同步持久化到 userInfo。 */
+const setPlayMode = (mode: PlayMode) => {
+  playMode.value = mode
+  userInfo.value.playMode = mode
+}
+
 const updatePlayMode = () => {
   const modes = [PlayMode.SEQUENCE, PlayMode.RANDOM, PlayMode.SINGLE]
   const currentIndex = modes.indexOf(playMode.value)
   const nextIndex = (currentIndex + 1) % modes.length
-  playMode.value = modes[nextIndex]
-  userInfo.value.playMode = playMode.value
+  setPlayMode(modes[nextIndex])
 }
 
 const resolveNextSong = ({
@@ -1003,14 +1008,11 @@ const onGlobalCtrl = (e: any) => {
       {
         const v = String(val || '')
         if (v === 'sequence') {
-          playMode.value = PlayMode.SEQUENCE
-          userInfo.value.playMode = playMode.value
+          setPlayMode(PlayMode.SEQUENCE)
         } else if (v === 'random') {
-          playMode.value = PlayMode.RANDOM
-          userInfo.value.playMode = playMode.value
+          setPlayMode(PlayMode.RANDOM)
         } else if (v === 'toggleSingle') {
-          playMode.value = playMode.value === PlayMode.SINGLE ? PlayMode.SEQUENCE : PlayMode.SINGLE
-          userInfo.value.playMode = playMode.value
+          setPlayMode(playMode.value === PlayMode.SINGLE ? PlayMode.SEQUENCE : PlayMode.SINGLE)
         }
       }
       break
@@ -1236,6 +1238,7 @@ export {
   playNextAuto,
   playPrevious,
   updatePlayMode,
+  setPlayMode,
   togglePlayPause,
   handlePlay,
   handlePause,
