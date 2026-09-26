@@ -67,6 +67,11 @@ const settingSections = computed(() => [
         label: '使用 Apple 风格歌词',
         value: playSetting.getUseAmlLyricRenderer,
         update: (val: boolean) => playSetting.setUseAmlLyricRenderer(val)
+      },
+      {
+        label: '歌单列表原始顺序',
+        value: playSetting.getKeepPlaylistOrder,
+        update: (val: boolean) => playSetting.setKeepPlaylistOrder(val)
       }
     ]
   },

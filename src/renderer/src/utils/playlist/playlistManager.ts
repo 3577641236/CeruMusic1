@@ -104,10 +104,17 @@ async function tryAddToQueueAsHost(song: SongList): Promise<boolean> {
 }
 
 // 事件类型定义
+/* replacePlaylist 允许两种载荷：
+ *   - SongList[]              既有调用方(本地页/歌单页/分享页)沿用，首播取 songs[0]
+ *   - { songs, startSong? }   指定首播歌曲。用于「随机播放」且用户开了
+ *                             「歌单列表原始顺序」时：列表要保持原序不能动，
+ *                             但首播要随机，只能把起始歌曲单独传下来。 */
+type ReplacePlaylistPayload = SongList[] | { songs: SongList[]; startSong?: SongList }
+
 type PlaylistEvents = {
   addToPlaylistAndPlay: SongList
   addToPlaylistEnd: SongList
-  replacePlaylist: SongList[]
+  replacePlaylist: ReplacePlaylistPayload
 }
 
 // 热更新时复用同一总线，避免页面发往新总线、播放器仍监听旧总线。
@@ -274,11 +281,13 @@ export async function addToPlaylistEnd(song: SongList, localUserStore: any) {
  * @param songs 要替换的歌曲列表
  * @param localUserStore LocalUserDetail store实例
  * @param playSongCallback 播放歌曲的回调函数
+ * @param startSong 指定首播歌曲，缺省取 songs[0]
  */
 export async function replacePlaylist(
   songs: SongList[],
   localUserStore: any,
-  playSongCallback: (song: SongList) => Promise<void>
+  playSongCallback: (song: SongList) => Promise<void>,
+  startSong?: SongList
 ) {
   try {
     if (songs.length === 0) {
@@ -286,12 +295,14 @@ export async function replacePlaylist(
       return
     }
 
+    /* 首播歌曲：调用方指定优先，否则沿用旧行为取第一首。 */
+    const first = startSong ?? songs[0]
+
     /* 一起听 member:批量替换列表语义不适合"点歌"流程,只取第一首作为点歌请求,
      * 其它歌曲忽略 + 提示用户。avoid 改本地共享列表破坏房间同步状态。 */
     const { useListenTogetherStore } = await import('@renderer/store')
     const lt = useListenTogetherStore()
     if (lt.isInRoom && !lt.canControl) {
-      const first = songs[0]
       if (first) {
         lt.requestSong({
           songmid: String(first.songmid),
@@ -321,9 +332,9 @@ export async function replacePlaylist(
       await lt.syncRoomContextFromLocal({ queueOnly: true })
     }
 
-    // 播放第一首歌曲
-    if (songs[0]) {
-      const playResult = playSongCallback(songs[0])
+    // 播放起始歌曲(调用方指定优先，否则为列表第一首)
+    if (first) {
+      const playResult = playSongCallback(first)
       if (playResult && typeof playResult.then === 'function') {
         await playResult
       }
@@ -356,8 +367,12 @@ export function initPlaylistEventListeners(
   const onAdd = async (song: SongList) => {
     await addToPlaylistEnd(song, localUserStore)
   }
-  const onReplace = async (songs: SongList[]) => {
-    await replacePlaylist(songs, localUserStore, playSongCallback)
+  const onReplace = async (payload: ReplacePlaylistPayload) => {
+    /* 兼容两种载荷：裸数组(既有调用方) 或 { songs, startSong }。 */
+    const isBare = Array.isArray(payload)
+    const songs = isBare ? payload : payload.songs
+    const startSong = isBare ? undefined : payload.startSong
+    await replacePlaylist(songs, localUserStore, playSongCallback, startSong)
   }
   emitter.on('addToPlaylistAndPlay', onPlay)
   emitter.on('addToPlaylistEnd', onAdd)

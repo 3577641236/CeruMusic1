@@ -21,7 +21,8 @@ export const playSetting = defineStore('playSetting', {
     isSeamlessTransition: false, // 是否开启无感过渡（智能交叉淡化）
     useAmlLyricRenderer: true, // 使用 AppleMusicLike 的歌词组件渲染
     isGrepLyricInfo: false, // 是否开启歌词信息 grep
-    strictGrep: false // 是否开启严格歌词信息 grep
+    strictGrep: false, // 是否开启严格歌词信息 grep
+    keepPlaylistOrder: false // 歌单「随机播放」时保持歌单原始顺序(不打乱列表)，默认关闭
   }),
   getters: {
     getisJumpLyric: (state) => state.isJumpLyric,
@@ -42,7 +43,8 @@ export const playSetting = defineStore('playSetting', {
     getIsSeamlessTransition: (state) => state.isSeamlessTransition,
     getUseAmlLyricRenderer: (state) => state.useAmlLyricRenderer,
     getIsGrepLyricInfo: (state) => state.isGrepLyricInfo,
-    getStrictGrep: (state) => state.strictGrep
+    getStrictGrep: (state) => state.strictGrep,
+    getKeepPlaylistOrder: (state) => state.keepPlaylistOrder
   },
   actions: {
     setIsDumpLyric(isDumpLyric: boolean) {
@@ -92,6 +94,9 @@ export const playSetting = defineStore('playSetting', {
     },
     setStrictGrep(strictGrep: boolean) {
       this.strictGrep = strictGrep
+    },
+    setKeepPlaylistOrder(enabled: boolean) {
+      this.keepPlaylistOrder = enabled
     }
   },
   persist: true

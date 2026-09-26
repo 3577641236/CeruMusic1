@@ -10,6 +10,7 @@ import songListAPI from '@renderer/api/songList'
 import { LocalUserDetailStore } from '@renderer/store/LocalUserDetail'
 import { useSettingsStore } from '@renderer/store/Settings'
 import { useGlobalPlayStatusStore } from '@renderer/store/GlobalPlayStatus'
+import { usePlaySettingStore } from '@renderer/store'
 import { createQualityDialog, downloadSingleSong } from '@renderer/utils/audio/download'
 import { setPlayMode } from '@renderer/utils/audio/globaPlayList'
 import { PlayMode } from '@renderer/types/audio'
@@ -54,6 +55,7 @@ const { settings } = storeToRefs(settingsStore)
 const filenameTemplate = ref(settings.value.filenameTemplate)
 
 const globalPlayStatus = useGlobalPlayStatusStore()
+const playSetting = usePlaySettingStore()
 
 const songListRef = ref<any>(null)
 
@@ -1325,27 +1327,50 @@ const handleFileSelect = async (event: Event) => {
   target.value = ''
 }
 
+/** 替换播放列表的可选项
+ *  shuffle     是否物理打乱列表顺序，由设置项「歌单列表原始顺序」取反决定
+ *  randomStart 是否从列表中随机挑一首作为首播歌曲 */
+type ReplacePlaylistOptions = { shuffle?: boolean; randomStart?: boolean }
+
 // 替换播放列表的通用函数
-const replacePlaylist = (songsToReplace: MusicItem[]) => {
+const replacePlaylist = (songsToReplace: MusicItem[], options: ReplacePlaylistOptions = {}) => {
   if (!(window as any).musicEmitter) {
     MessagePlugin.error('播放器未初始化')
     return
   }
 
-  // 这里不再打乱歌曲顺序。随机播放交给播放模式(PlayMode.RANDOM)处理：
-  // 它用独立的 shuffleOrder 维护播放顺序，列表本身保持歌单原顺序、可逆，
-  // 且播完一轮会自动重洗。在此处物理打乱只会让队列永久乱序。
-  const finalSongs = toRaw(songsToReplace)
+  let finalSongs: any[] = toRaw(songsToReplace)
+  /* 打乱列表与否完全由「歌单列表原始顺序」决定：关闭(默认)时打乱，开启时保持歌单原序。
+   * 打乱只影响列表展示和 songs[0] 的取值；播放顺序本身仍由 RANDOM 模式的 shuffleOrder
+   * 维护，两者互不冲突。 */
+  if (options.shuffle) {
+    const idx = Array.from({ length: finalSongs.length }, (_, i) => i)
+    for (let i = idx.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[idx[i], idx[j]] = [idx[j], idx[i]]
+    }
+    finalSongs = idx.map((i) => finalSongs[i])
+  }
   const replaceData = finalSongs.map((song) => toRaw(song))
+
+  /* 起始歌曲随机：列表保持原序时 songs[0] 恒等于歌单第一首，光靠打乱列表拿不到
+   * 随机起点，所以把挑中的那首单独传下去 —— 不动列表本身，显示顺序不受影响。 */
+  const startIndex =
+    options.randomStart && replaceData.length > 1
+      ? Math.floor(Math.random() * replaceData.length)
+      : 0
   // 使用自定义事件替换整个播放列表
   if ((window as any).musicEmitter) {
-    ;(window as any).musicEmitter.emit('replacePlaylist', replaceData)
+    ;(window as any).musicEmitter.emit('replacePlaylist', {
+      songs: replaceData,
+      startSong: replaceData[startIndex]
+    })
   }
 
   MessagePlugin.success(`请稍等歌曲加载完成播放`)
 }
 
-const playAll = () => {
+const playAll = (options: ReplacePlaylistOptions = {}) => {
   return async () => {
     let loadingMsg: Promise<any> | null = null
     if (!isLocalPlaylist.value && hasMore.value) {
@@ -1373,7 +1398,7 @@ const playAll = () => {
     console.groupCollapsed('playAll:')
     console.log('songs', paserSongs)
     console.groupEnd()
-    replacePlaylist(paserSongs)
+    replacePlaylist(paserSongs, options)
   }
 }
 
@@ -1407,14 +1432,18 @@ const handleShufflePlaylist = async () => {
     cancelBtn: '取消',
     onConfirm: async () => {
       dialog.destroy()
-      // 与底部播放条的模式按钮保持一致：这里点随机播放，播放模式也切成随机。
-      // 否则底部图标会显示"顺序播放"，且播完一轮不会重洗(shuffleOrder 只在
-      // RANDOM 模式下维护/重建)。
-      // 必须放在替换列表之前 —— 这样列表变化时 watch(list) 会在 RANDOM 分支里
-      // 调 ensureShuffleOrder(true) 强制重洗；若放在之后，对同一个歌单重复点
-      // 随机播放时会因 isShuffleOrderValid() 判定通过而沿用上一轮顺序。
-      setPlayMode(PlayMode.RANDOM)
-      await playAll()()
+      /* 一个开关决定三件事(关闭=默认)：
+       *   关闭 → 打乱列表；不单独随机起点(打乱后 songs[0] 本身就是随机那首)；
+       *          不碰底部播放模式，尊重用户手动选的模式。
+       *   开启 → 保持歌单原序；单独随机起点；并把播放模式同步成随机。 */
+      const keepOrder = playSetting.getKeepPlaylistOrder
+      /* 同步模式必须放在替换列表之前：这样列表变化时 watch(list) 会在 RANDOM 分支里
+       * 调 ensureShuffleOrder(true) 强制重洗；若放在之后，对同一个歌单重复点随机播放
+       * 时会因 isShuffleOrderValid() 判定通过而沿用上一轮顺序。 */
+      if (keepOrder) {
+        setPlayMode(PlayMode.RANDOM)
+      }
+      await playAll({ shuffle: !keepOrder, randomStart: keepOrder })()
     },
     onCancel: () => {
       dialog.destroy()
